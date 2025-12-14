@@ -33,7 +33,6 @@ const C = {
   sub: "#6B7280",
   hint: "#9CA3AF",
   white: "#FFFFFF",
-  blueTrail: "#60A5FA",
   darkGlass: "rgba(17,24,39,0.92)",
   tealDot: "#38BDF8",
   destPin: "#E11D48",
@@ -237,7 +236,6 @@ export default function DriverTracking({ route }) {
   const [heading, setHeading] = useState(0);
   const [routeCoords, setRouteCoords] = useState([]);
   const [eta, setEta] = useState(null);
-  const [breadcrumbs, setBreadcrumbs] = useState([]);
   const [navMode, setNavMode] = useState(false);
   const [steps, setSteps] = useState([]);
   const [stepIdx, setStepIdx] = useState(0);
@@ -586,7 +584,6 @@ export default function DriverTracking({ route }) {
 
         setDevicePos(cur);
         setHeading(hdg);
-        setBreadcrumbs((p) => [...p.slice(-120), cur]);
 
         if (lastPoint) setTripDistance((d) => d + haversine(lastPoint, cur));
         setLastPoint(cur);
@@ -629,7 +626,7 @@ export default function DriverTracking({ route }) {
   const distanceKm = (tripDistance / 1000).toFixed(1);
   const avgSpeed =
     durationMins > 0
-      ? Math.round(tripDistance / 1000 / (durationMins / 60))
+      ? Math.round((tripDistance / 1000) / (durationMins / 60))
       : 0;
 
   const arrivalTimeStr = (() => {
@@ -970,14 +967,9 @@ export default function DriverTracking({ route }) {
             coordinate={devicePos}
             title="Current location"
             description={originText}
+            anchor={{ x: 0.5, y: 0.5 }}
           >
-            <View style={{ alignItems: "center", justifyContent: "center" }}>
-              <MaterialCommunityIcons
-                name="map-marker"
-                size={38}
-                color={C.blue}
-                style={{ marginBottom: 4 }}
-              />
+            <View style={styles.deviceMarker}>
               <Animated.View style={[styles.pulse, pulseStyle]} />
               <View style={styles.blueDot} />
             </View>
@@ -989,14 +981,6 @@ export default function DriverTracking({ route }) {
             coordinates={routeCoords}
             strokeWidth={7}
             strokeColor={C.routeLine}
-          />
-        )}
-
-        {breadcrumbs.length > 1 && (
-          <Polyline
-            coordinates={breadcrumbs}
-            strokeWidth={3}
-            strokeColor={C.blueTrail}
           />
         )}
       </MapView>
@@ -1407,6 +1391,12 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(37,99,235,0.18)",
     borderWidth: 1.5,
     borderColor: "rgba(37,99,235,0.6)",
+  },
+  deviceMarker: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
   },
   blueDot: {
     width: 14,

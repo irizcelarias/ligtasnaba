@@ -1,4 +1,4 @@
-// apps/web-admin/src/app/(protected)/dashboard/page.js
+// apps/web-admin/src/app/(protected)/emergency-dashboard/page.js
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -38,29 +38,36 @@ function fmtDateTime(d) {
   return dt.toLocaleString();
 }
 
-/* code (YELLOW / ORANGE / RED) -> severity label
-   - YELLOW  -> MINOR
-   - ORANGE  -> MODERATE
-   - RED     -> HIGH
-*/
+/* code (YELLOW / ORANGE / RED) -> severity label */
 function mapSeverityFromCode(codeRaw) {
   const c = (codeRaw || "").toString().toUpperCase();
 
-  if (c === "RED" || c === "CODE_RED") return "HIGH"; // Code Red = High severity
-  if (c === "ORANGE" || c === "CODE_ORANGE") return "MODERATE"; // Code Orange = Moderate
-  if (c === "YELLOW" || c === "CODE_YELLOW") return "MINOR"; // Code Yellow = Minor
+  if (c === "RED" || c === "CODE_RED") return "HIGH";
+  if (c === "ORANGE" || c === "CODE_ORANGE") return "MODERATE";
+  if (c === "YELLOW" || c === "CODE_YELLOW") return "MINOR";
 
   return "UNKNOWN";
+}
+
+// small helper so we can filter by "last X days" etc.
+function isWithinDays(dateString, days) {
+  if (!dateString) return false;
+  const dt = new Date(dateString);
+  if (Number.isNaN(dt.getTime())) return false;
+  const now = new Date();
+  const diffMs = now.getTime() - dt.getTime();
+  return diffMs <= days * 24 * 60 * 60 * 1000 && diffMs >= 0;
 }
 
 /* ---------- main component ---------- */
 export default function EmergencyDashboardPage() {
   const [emergencies, setEmergencies] = useState([]);
+  const [allEmergencies, setAllEmergencies] = useState([]); // full list from API
   const [loading, setLoading] = useState(false);
   const [resolvingId, setResolvingId] = useState(null);
   const [flash, setFlash] = useState({ type: "", text: "" });
 
-  // NEW: for realtime + modal
+  // for realtime + modal
   const [alertIncident, setAlertIncident] = useState(null);
   const [showAlertModal, setShowAlertModal] = useState(false);
   const prevIdsRef = useRef(new Set());
@@ -88,6 +95,8 @@ export default function EmergencyDashboardPage() {
         ? data.incidents
         : [];
 
+      setAllEmergencies(arr);
+
       const active = arr.filter((e) => {
         const st = (e.status || "").toString().toUpperCase();
         return (
@@ -98,7 +107,7 @@ export default function EmergencyDashboardPage() {
         );
       });
 
-      // ---- detect bag-ong incident for modal ----
+      // ---- detect new incident for popup modal ----
       const prevIds = prevIdsRef.current;
       let newIncident = null;
       for (const e of active) {
@@ -136,9 +145,9 @@ export default function EmergencyDashboardPage() {
     // initial load
     loadEmergencies(false);
 
-    // 🔁 realtime polling every 5 seconds
+    // realtime polling every 5 seconds
     const intervalId = setInterval(() => {
-      loadEmergencies(true); // quiet = true (no spinner/flash)
+      loadEmergencies(true);
     }, 5000);
 
     return () => clearInterval(intervalId);
@@ -151,6 +160,7 @@ export default function EmergencyDashboardPage() {
     try {
       setResolvingId(id);
       await resolveEmergency(id);
+
       setEmergencies((prev) =>
         prev.filter((e) => (e.id ?? e.incidentId) !== id)
       );
@@ -178,15 +188,12 @@ export default function EmergencyDashboardPage() {
     let label;
 
     if (baseSeverity === "MINOR" || baseSeverity === "LOW") {
-      // Code Yellow
       style = Sx.sevLow;
       label = "MINOR";
     } else if (baseSeverity === "MODERATE" || baseSeverity === "MEDIUM") {
-      // Code Orange
       style = Sx.sevMedium;
       label = "MODERATE";
     } else if (baseSeverity === "HIGH" || baseSeverity === "CRITICAL") {
-      // Code Red
       style = Sx.sevHigh;
       label = "HIGH";
     } else {
@@ -197,20 +204,14 @@ export default function EmergencyDashboardPage() {
     return <span style={style}>{label}</span>;
   }
 
-  // small helper to derive fields (reused sa card + modal)
+  // ---------- normalize incident from API ---------- */
   function normalizeIncident(e) {
     if (!e) return null;
     const id = e?.id ?? e?.incidentId;
 
-    const busNumber =
-      e?.busNumber || e?.bus_no || e?.bus?.number || "Unknown bus";
+    const busNumber = e?.busNumber || e?.bus?.number || "Unknown bus";
 
-    const busPlate =
-      e?.busPlate ||
-      e?.bus_plate ||
-      e?.plateNumber ||
-      e?.bus?.plate ||
-      null;
+    const busPlate = e?.busPlate || e?.plateNumber || e?.bus?.plate || null;
 
     const driverName =
       e?.driverName ||
@@ -225,18 +226,27 @@ export default function EmergencyDashboardPage() {
       e?.iotDeviceId ||
       "N/A";
 
+    // Build coordinate label + map link
+    let coordLabel = null;
+    let mapUrl = null;
+
+    if (typeof e?.latitude === "number" && typeof e?.longitude === "number") {
+      const lat = e.latitude.toFixed(5);
+      const lng = e.longitude.toFixed(5);
+      coordLabel = `${lat}, ${lng}`;
+      mapUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+    }
+
     const locationLabel =
       e?.locationLabel ||
       e?.locationText ||
       e?.nearestLandmark ||
-      (e?.lat && e?.lng
-        ? `${e.lat}, ${e.lng}`
-        : e?.latitude && e?.longitude
-        ? `${e.latitude}, ${e.longitude}`
-        : "Location not available");
+      coordLabel ||
+      "Location not available";
 
     const createdAt = e?.createdAt || e?.timestamp || e?.reportedAt || null;
     const severity = e?.severity || mapSeverityFromCode(e?.code);
+    const message = e?.message || "No details provided.";
 
     return {
       id,
@@ -247,11 +257,104 @@ export default function EmergencyDashboardPage() {
       locationLabel,
       createdAt,
       severity,
+      message,
+      mapUrl,
       raw: e,
     };
   }
 
   const alertData = normalizeIncident(alertIncident);
+
+  /* ---------- derived data for new sections ---------- */
+
+  const normalizedActive = emergencies.map(normalizeIncident).filter(Boolean);
+
+  const normalizedAll = allEmergencies.map(normalizeIncident).filter(Boolean);
+
+  // overview stats (based on whatever we have in allEmergencies)
+  const incidentsLast7Days = normalizedAll.filter((i) =>
+    isWithinDays(i.createdAt, 7)
+  );
+
+  const totalActive = normalizedActive.length;
+  const totalRecent = incidentsLast7Days.length;
+  const totalIncidents = normalizedAll.length; // 👈 total incidents overall
+
+  let highCount = 0;
+  let moderateCount = 0;
+  let minorCount = 0;
+
+  normalizedActive.forEach((i) => {
+    const sev = (i.severity || "").toString().toUpperCase();
+    if (sev === "HIGH" || sev === "CRITICAL") highCount += 1;
+    else if (sev === "MODERATE" || sev === "MEDIUM") moderateCount += 1;
+    else if (sev === "MINOR" || sev === "LOW") minorCount += 1;
+  });
+
+  const lastIncident =
+    normalizedAll.length > 0
+      ? [...normalizedAll].sort(
+          (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+        )[0]
+      : null;
+
+  // Timeline: latest 6 incidents (active or resolved from what we have)
+  const timelineItems = [...normalizedAll]
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .slice(0, 6);
+
+  // Trends: incidents per day in last 7 days
+  const now = new Date();
+  const trendMap = {};
+  incidentsLast7Days.forEach((i) => {
+    const dt = new Date(i.createdAt);
+    if (Number.isNaN(dt.getTime())) return;
+    const key = dt.toISOString().slice(0, 10);
+    trendMap[key] = (trendMap[key] || 0) + 1;
+  });
+
+  const trendDays = [];
+  for (let offset = 6; offset >= 0; offset -= 1) {
+    const d = new Date(now.getTime() - offset * 24 * 60 * 60 * 1000);
+    const key = d.toISOString().slice(0, 10);
+    const label = d.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+    trendDays.push({
+      key,
+      label,
+      count: trendMap[key] || 0,
+    });
+  }
+
+  const maxTrendCount =
+    trendDays.reduce((max, d) => Math.max(max, d.count), 0) || 1;
+
+  // Driver performance snapshot (based on incidents count)
+  const driverStatsMap = {};
+  normalizedAll.forEach((i) => {
+    const name = i.driverName || "Unknown driver";
+    if (!driverStatsMap[name]) {
+      driverStatsMap[name] = {
+        name,
+        total: 0,
+        high: 0,
+      };
+    }
+    driverStatsMap[name].total += 1;
+    const sev = (i.severity || "").toString().toUpperCase();
+    if (sev === "HIGH" || sev === "CRITICAL") driverStatsMap[name].high += 1;
+  });
+
+  const driverStats = Object.values(driverStatsMap).sort(
+    (a, b) => b.total - a.total
+  );
+  const topDriver = driverStats[0] || null;
+  const safestDriver =
+    driverStats.length > 0
+      ? [...driverStats].sort((a, b) => a.high - b.high || a.total - b.total)[0]
+      : null;
 
   return (
     <div className={poppins.className} style={S.page}>
@@ -264,6 +367,43 @@ export default function EmergencyDashboardPage() {
           Live monitoring of active emergency alerts from LigtasCommute devices.
         </p>
       </div>
+
+      {/* ---------- QUICK OVERVIEW CARDS ---------- */}
+      <section style={S.overviewGrid}>
+        <div style={S.overviewCard}>
+          <div style={S.overviewLabel}>Active Emergencies</div>
+          <div style={S.overviewValue}>{totalActive}</div>
+          <div style={S.overviewSub}>Real-time open alerts</div>
+        </div>
+
+        <div style={S.overviewCard}>
+          <div style={S.overviewLabel}>High Severity (Active)</div>
+          <div style={S.overviewValue}>{highCount}</div>
+          <div style={S.overviewSub}>
+            Red-level emergencies currently ongoing
+          </div>
+        </div>
+
+        <div style={S.overviewCard}>
+          <div style={S.overviewLabel}>Total Incidents</div>
+          <div style={S.overviewValue}>{totalIncidents}</div>
+          <div style={S.overviewSub}>
+            All incidents received from IoT devices
+          </div>
+        </div>
+
+        <div style={S.overviewCard}>
+          <div style={S.overviewLabel}>Last Alert Received</div>
+          <div style={S.overviewValueSm}>
+            {lastIncident ? timeAgo(lastIncident.createdAt) : "—"}
+          </div>
+          <div style={S.overviewSub}>
+            {lastIncident
+              ? `Bus ${lastIncident.busNumber} · ${lastIncident.driverName}`
+              : "No recent alerts"}
+          </div>
+        </div>
+      </section>
 
       {/* top meta row – LIVE FEED */}
       <div style={S.topMetaRow}>
@@ -287,7 +427,7 @@ export default function EmergencyDashboardPage() {
         </div>
       )}
 
-      {/* main card */}
+      {/* main card – ACTIVE EMERGENCIES */}
       <section style={S.card}>
         <div
           style={{
@@ -313,7 +453,6 @@ export default function EmergencyDashboardPage() {
               move to Emergency Reports.
             </div>
           </div>
-          {/* Refresh button removed – realtime na via polling */}
         </div>
 
         {loading && emergencies.length === 0 ? (
@@ -342,6 +481,9 @@ export default function EmergencyDashboardPage() {
                 locationLabel,
                 createdAt,
                 severity,
+                message,
+                mapUrl,
+                raw,
               } = data;
 
               return (
@@ -349,21 +491,24 @@ export default function EmergencyDashboardPage() {
                   {/* top row: bus + driver + severity + time ago */}
                   <div style={S.incidentHeader}>
                     <div style={S.incidentTitleCol}>
-                      <div style={S.incidentLabel}>Bus &amp; Driver</div>
+                      <div style={S.incidentLabel}>BUS &amp; DRIVER</div>
                       <div style={S.incidentTitle}>
                         Bus {busNumber} · {driverName}
                       </div>
                     </div>
 
                     <div style={S.incidentRightCol}>
-                      {severityPill(severity, e?.code)}
+                      {severityPill(severity, raw?.code)}
                       <div style={S.incidentTime}>{timeAgo(createdAt)}</div>
                     </div>
                   </div>
 
-                  {/* info grid */}
+                  {/* info grid with section labels */}
                   <div style={S.infoGrid}>
                     <div>
+                      <div style={S.infoSectionHeader}>
+                        INCIDENT INFORMATION
+                      </div>
                       <div style={S.infoRow}>
                         <span style={S.infoLabel}>Device ID</span>
                         <span style={S.infoValue}>{deviceId}</span>
@@ -377,21 +522,35 @@ export default function EmergencyDashboardPage() {
                     </div>
 
                     <div>
+                      <div style={S.infoSectionHeader}>BUS &amp; LOCATION</div>
                       <div style={S.infoRow}>
                         <span style={S.infoLabel}>Location</span>
-                        <span style={S.infoValue}>{locationLabel}</span>
+                        {mapUrl ? (
+                          <a
+                            href={mapUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={S.mapLink}
+                          >
+                            {locationLabel}
+                          </a>
+                        ) : (
+                          <span style={S.infoValue}>{locationLabel}</span>
+                        )}
                       </div>
                       <div style={S.infoRow}>
-                        <span style={S.infoLabel}>
-                          {busPlate ? "Plate / Incident" : "Incident ID"}
-                        </span>
+                        <span style={S.infoLabel}>Plate number</span>
                         <span style={S.infoValue}>
-                          {busPlate
-                            ? `${busPlate} · ${id}`
-                            : id || "Not available"}
+                          {busPlate || "Not available"}
                         </span>
                       </div>
                     </div>
+                  </div>
+
+                  {/* message / details */}
+                  <div style={S.infoRow}>
+                    <span style={S.infoLabel}>Details</span>
+                    <span style={S.infoValue}>{message}</span>
                   </div>
 
                   {/* footer: Resolve button */}
@@ -436,7 +595,9 @@ export default function EmergencyDashboardPage() {
               </div>
               <div style={S.modalMetaRow}>
                 {severityPill(alertData.severity, alertData.raw?.code)}
-                <span style={S.modalTime}>{timeAgo(alertData.createdAt)}</span>
+                <span style={S.modalTime}>
+                  {timeAgo(alertData.createdAt)}
+                </span>
               </div>
 
               <div style={S.modalInfoGrid}>
@@ -444,12 +605,25 @@ export default function EmergencyDashboardPage() {
                   <div style={S.modalInfoLabel}>Device ID</div>
                   <div style={S.modalInfoValue}>{alertData.deviceId}</div>
                 </div>
+
                 <div style={S.modalInfoItem}>
                   <div style={S.modalInfoLabel}>Location</div>
-                  <div style={S.modalInfoValue}>
-                    {alertData.locationLabel}
-                  </div>
+                  {alertData.mapUrl ? (
+                    <a
+                      href={alertData.mapUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={S.mapLink}
+                    >
+                      {alertData.locationLabel}
+                    </a>
+                  ) : (
+                    <div style={S.modalInfoValue}>
+                      {alertData.locationLabel}
+                    </div>
+                  )}
                 </div>
+
                 <div style={S.modalInfoItem}>
                   <div style={S.modalInfoLabel}>Reported at</div>
                   <div style={S.modalInfoValue}>
@@ -464,6 +638,11 @@ export default function EmergencyDashboardPage() {
                       : alertData.id || "Not available"}
                   </div>
                 </div>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <div style={S.modalInfoLabel}>Details</div>
+                <div style={S.modalInfoValue}>{alertData.message}</div>
               </div>
             </div>
 
@@ -492,6 +671,43 @@ const styles = {
     maxWidth: 1120,
     margin: "0 auto",
     padding: "0 16px 24px",
+  },
+
+  /* QUICK OVERVIEW CARDS */
+  overviewGrid: {
+    marginTop: 14,
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: 12,
+  },
+  overviewCard: {
+    background: "var(--card)",
+    borderRadius: 20,
+    border: "1px solid var(--line)",
+    padding: 14,
+    boxShadow: "0 14px 30px rgba(15,23,42,0.04)",
+  },
+  overviewLabel: {
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 0.08,
+    color: "#9CA3AF",
+    marginBottom: 4,
+  },
+  overviewValue: {
+    fontSize: 22,
+    fontWeight: 800,
+    color: "#0D658B",
+  },
+  overviewValueSm: {
+    fontSize: 18,
+    fontWeight: 700,
+    color: "#0D658B",
+  },
+  overviewSub: {
+    fontSize: 12,
+    color: "#6B7280",
+    marginTop: 4,
   },
 
   topMetaRow: {
@@ -605,6 +821,13 @@ const styles = {
     gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
     gap: 24,
   },
+  infoSectionHeader: {
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 0.08,
+    color: "#9CA3AF",
+    marginBottom: 4,
+  },
   infoRow: {
     display: "flex",
     gap: 12,
@@ -612,7 +835,7 @@ const styles = {
     marginTop: 4,
   },
   infoLabel: {
-    width: 90,
+    width: 110,
     color: "#6B7280",
   },
   infoValue: {
@@ -667,16 +890,6 @@ const styles = {
     color: "#B91C1C",
     border: "1px solid #FCA5A5",
   },
-  sevCritical: {
-    padding: "4px 10px",
-    borderRadius: 999,
-    fontSize: 11,
-    fontWeight: 700,
-    letterSpacing: 0.08,
-    background: "#FEE2E2",
-    color: "#7F1D1D",
-    border: "1px solid #F87171",
-  },
   sevUnknown: {
     padding: "4px 10px",
     borderRadius: 999,
@@ -688,7 +901,205 @@ const styles = {
     border: "1px solid #CBD5F5",
   },
 
-  /* ---------- modal styles ---------- */
+  /* bottom grid: timeline + trends + drivers */
+  bottomGrid: {
+    marginTop: 12,
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1.3fr) minmax(0, 1fr)",
+    gap: 12,
+  },
+
+  sectionHeaderRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 8,
+    marginBottom: 8,
+  },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#0F172A",
+  },
+  sectionSubtitle: {
+    fontSize: 12,
+    color: "#6B7280",
+  },
+
+  timelineCard: {
+    background: "var(--card)",
+    borderRadius: 24,
+    border: "1px solid var(--line)",
+    padding: 16,
+    boxShadow: "0 18px 40px rgba(15,23,42,0.04)",
+    minHeight: 180,
+  },
+  emptySmall: {
+    padding: "12px 4px",
+  },
+  timelineList: {
+    listStyle: "none",
+    padding: 0,
+    margin: 0,
+    display: "grid",
+    gap: 8,
+  },
+  timelineItem: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  timelineLeft: {
+    display: "flex",
+    gap: 8,
+    alignItems: "flex-start",
+  },
+  timelineDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+    marginTop: 6,
+    background: "#0EA5E9",
+    boxShadow: "0 0 0 3px rgba(14,165,233,0.25)",
+  },
+  timelineTitle: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: "#0D658B",
+  },
+  timelineMeta: {
+    fontSize: 12,
+    color: "#6B7280",
+  },
+  timelineRight: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-end",
+    gap: 4,
+  },
+  timelineTime: {
+    fontSize: 12,
+    color: "#6B7280",
+  },
+
+  rightColumn: {
+    display: "grid",
+    gap: 12,
+    gridTemplateRows: "minmax(0, auto) minmax(0, auto)",
+  },
+
+  trendCard: {
+    background: "var(--card)",
+    borderRadius: 24,
+    border: "1px solid var(--line)",
+    padding: 16,
+    boxShadow: "0 18px 40px rgba(15,23,42,0.04)",
+  },
+  trendChart: {
+    marginTop: 8,
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 8,
+    minHeight: 120,
+  },
+  trendBarGroup: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 2,
+  },
+  trendBarOuter: {
+    width: "100%",
+    borderRadius: 999,
+    background: "#E5E7EB",
+    height: 80,
+    display: "flex",
+    alignItems: "flex-end",
+    overflow: "hidden",
+  },
+  trendBarInner: {
+    width: "100%",
+    borderRadius: 999,
+    background:
+      "linear-gradient(to top, rgba(14,165,233,1), rgba(59,130,246,1))",
+    transition: "height 0.3s ease-out",
+  },
+  trendBarLabel: {
+    fontSize: 11,
+    color: "#6B7280",
+    marginTop: 4,
+  },
+  trendBarCount: {
+    fontSize: 11,
+    color: "#0F172A",
+  },
+
+  driverCard: {
+    background: "var(--card)",
+    borderRadius: 24,
+    border: "1px solid var(--line)",
+    padding: 16,
+    boxShadow: "0 18px 40px rgba(15,23,42,0.04)",
+  },
+  driverContent: {
+    display: "grid",
+    gap: 10,
+  },
+  driverHighlight: {
+    padding: 10,
+    borderRadius: 16,
+    background: "#ECFEFF",
+    border: "1px solid #67E8F9",
+  },
+  driverHighlightSecondary: {
+    padding: 10,
+    borderRadius: 16,
+    background: "#EEF2FF",
+    border: "1px solid #A5B4FC",
+  },
+  driverHighlightLabel: {
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 0.08,
+    color: "#6B7280",
+    marginBottom: 2,
+  },
+  driverHighlightName: {
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#0F172A",
+  },
+  driverHighlightMeta: {
+    fontSize: 12,
+    color: "#4B5563",
+    marginTop: 2,
+  },
+  driverTable: {
+    marginTop: 4,
+    borderTop: "1px solid #E5E7EB",
+    paddingTop: 6,
+    display: "grid",
+    gap: 4,
+  },
+  driverRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    fontSize: 12,
+  },
+  driverRowName: {
+    fontWeight: 500,
+    color: "#111827",
+  },
+  driverRowStats: {
+    color: "#6B7280",
+    display: "flex",
+    gap: 4,
+  },
+
+  /* modal styles */
   modalOverlay: {
     position: "fixed",
     inset: 0,
@@ -787,5 +1198,14 @@ const styles = {
     fontSize: 13,
     cursor: "pointer",
     fontWeight: 500,
+  },
+
+  mapLink: {
+    fontSize: 13,
+    fontWeight: 500,
+    color: "#0D658B",
+    textDecoration: "underline",
+    cursor: "pointer",
+    wordBreak: "break-word",
   },
 };

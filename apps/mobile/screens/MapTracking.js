@@ -24,7 +24,7 @@ import { WebView } from "react-native-webview";
 import { useNavigation } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { addIncidentSubmitted } from "../lib/notify";
-import LCText from "../components/LCText"; // ⬅️ use your LCText component
+import LCText from "../components/LCText";
 
 const C = {
   brand: "#0B132B",
@@ -301,7 +301,6 @@ export default function MapTracking({ route }) {
   const [heading, setHeading] = useState(0);
   const [routeCoords, setRouteCoords] = useState([]);
   const [eta, setEta] = useState(null);
-  const [breadcrumbs, setBreadcrumbs] = useState([]);
   const [navMode, setNavMode] = useState(false);
   const [, setSteps] = useState([]);
   const [, setStepIdx] = useState(0);
@@ -309,10 +308,22 @@ export default function MapTracking({ route }) {
 
   const [speedKmh, setSpeedKmh] = useState(null);
 
-  const [tripStartAt, setTripStartAt] = useState(null);
-  const [tripDistance, setTripDistance] = useState(0);
-  const [lastPoint, setLastPoint] = useState(null);
+  // ---- TRIP STATS (accurate) ----
+  const tripStatsRef = useRef({
+    startedAt: null,
+    lastPoint: null,
+    distance: 0, // meters
+  });
+
+  const [arrivalStats, setArrivalStats] = useState({
+    durationMins: 0,
+    distanceKm: 0,
+    avgSpeed: 0,
+  });
+
   const [lastUpdateAt, setLastUpdateAt] = useState(null);
+  const [lastPointState, setLastPointState] = useState(null);
+  // -------------------------------
 
   const [tripId, setTripId] = useState(null);
 
@@ -706,8 +717,6 @@ export default function MapTracking({ route }) {
       setPickupSearch(label);
     }
 
-    setBreadcrumbs([]);
-
     let newTripId = tripId;
     if (!newTripId) {
       newTripId = await startTripOnServer(startFrom);
@@ -720,12 +729,19 @@ export default function MapTracking({ route }) {
     animateCameraFollow(startFrom, heading, 18.2);
 
     await fetchDirections(startFrom, dest, true);
+
+    // Reset + start trip stats
     setNavMode(true);
-    setTripStartAt(Date.now());
-    setTripDistance(0);
-    setLastPoint(startFrom);
-    setLastUpdateAt(Date.now());
     setSpeedKmh(null);
+
+    tripStatsRef.current = {
+      startedAt: Date.now(),
+      lastPoint: startFrom,
+      distance: 0,
+    };
+
+    setLastPointState(startFrom);
+    setLastUpdateAt(Date.now());
 
     startBackgroundTracking().catch(() => {});
 
@@ -748,9 +764,13 @@ export default function MapTracking({ route }) {
 
         let s = pos.coords.speed;
         const now = Date.now();
-        if ((!Number.isFinite(s) || s === null) && lastPoint && lastUpdateAt) {
+        if (
+          (!Number.isFinite(s) || s === null) &&
+          lastPointState &&
+          lastUpdateAt
+        ) {
           const dt = (now - lastUpdateAt) / 1000;
-          if (dt > 0) s = haversine(lastPoint, cur) / dt;
+          if (dt > 0) s = haversine(lastPointState, cur) / dt;
         }
         const kmh =
           Number.isFinite(s) && s !== null
@@ -761,10 +781,18 @@ export default function MapTracking({ route }) {
 
         setDevicePos(cur);
         setHeading(hdg);
-        setBreadcrumbs((p) => [...p.slice(-120), cur]);
+        setLastPointState(cur);
 
-        if (lastPoint) setTripDistance((d) => d + haversine(lastPoint, cur));
-        setLastPoint(cur);
+        // --- update trip stats accurately ---
+        const stats = tripStatsRef.current;
+        if (!stats.startedAt) stats.startedAt = now;
+        if (stats.lastPoint) {
+          const seg = haversine(stats.lastPoint, cur); // meters
+          if (seg > 0.5) {
+            stats.distance += seg;
+          }
+        }
+        stats.lastPoint = cur;
 
         const stopped = kmh !== null ? kmh < 2 : false;
         animateCameraFollow(cur, hdg, stopped ? 18.0 : 18.2);
@@ -793,6 +821,31 @@ export default function MapTracking({ route }) {
     watchRef.current = null;
     stopBackgroundTracking().catch(() => {});
     if (arrived) {
+      // compute final stats for arrival sheet
+      const stats = tripStatsRef.current;
+      const endTime = Date.now();
+      const durationMs = stats.startedAt ? endTime - stats.startedAt : 0;
+
+      const durationMins =
+        durationMs > 0 ? Math.max(1, Math.round(durationMs / 60000)) : 0;
+
+      const distanceKmRaw = stats.distance / 1000;
+      const distanceKm =
+        distanceKmRaw < 0.05
+          ? 0
+          : Number(distanceKmRaw.toFixed(1)); // ignore <50m
+
+      const avgSpeed =
+        durationMs > 0 && distanceKmRaw > 0
+          ? Math.round(distanceKmRaw / (durationMs / 3600000))
+          : 0;
+
+      setArrivalStats({
+        durationMins,
+        distanceKm,
+        avgSpeed,
+      });
+
       completeTripOnServer().catch(() => {});
       setArrivedSheet(true);
     }
@@ -814,10 +867,21 @@ export default function MapTracking({ route }) {
     setEta(null);
     setSteps([]);
     setStepIdx(0);
-    setTripStartAt(null);
-    setTripDistance(0);
-    setLastPoint(null);
+
+    // reset trip stats + arrival stats
+    tripStatsRef.current = {
+      startedAt: null,
+      lastPoint: null,
+      distance: 0,
+    };
+    setArrivalStats({
+      durationMins: 0,
+      distanceKm: 0,
+      avgSpeed: 0,
+    });
+    setLastPointState(null);
     setLastUpdateAt(null);
+
     setTripId(null);
   };
   const goDashboard = () => {
@@ -967,15 +1031,6 @@ export default function MapTracking({ route }) {
     return `${pickShort(a)} \u2192 ${pickShort(b)}`;
   })();
 
-  const durationMins = tripStartAt
-    ? Math.max(0, Math.round((Date.now() - tripStartAt) / 60000))
-    : 0;
-  const distanceKm = (tripDistance / 1000).toFixed(1);
-  const avgSpeed =
-    durationMins > 0
-      ? Math.round((tripDistance / 1000) / (durationMins / 60))
-      : 0;
-
   const submitIncident = async () => {
     if (!reportCats.length) {
       setError("Choose at least one category.");
@@ -1071,14 +1126,9 @@ export default function MapTracking({ route }) {
             coordinate={devicePos}
             title="Current location"
             description={originText}
+            anchor={{ x: 0.5, y: 0.5 }} // always centered for circle
           >
-            <View style={{ alignItems: "center", justifyContent: "center" }}>
-              <MaterialCommunityIcons
-                name="map-marker"
-                size={38}
-                color={C.blue}
-                style={{ marginBottom: 4 }}
-              />
+            <View style={s.deviceMarker}>
               <Animated.View style={[s.pulse, pulseStyle]} />
               <View style={s.blueDot} />
             </View>
@@ -1090,14 +1140,6 @@ export default function MapTracking({ route }) {
             coordinates={routeCoords}
             strokeWidth={6}
             strokeColor={C.routeLine}
-          />
-        )}
-
-        {breadcrumbs.length > 1 && (
-          <Polyline
-            coordinates={breadcrumbs}
-            strokeWidth={3}
-            strokeColor={C.breadcrumb}
           />
         )}
       </MapView>
@@ -1430,7 +1472,7 @@ export default function MapTracking({ route }) {
                   color={C.sub}
                 />
                 <LCText style={s.statVal}>
-                  {durationMins} mins
+                  {arrivalStats.durationMins} mins
                 </LCText>
                 <LCText style={s.statLbl}>Duration</LCText>
               </View>
@@ -1441,7 +1483,7 @@ export default function MapTracking({ route }) {
                   color={C.sub}
                 />
                 <LCText style={s.statVal}>
-                  {distanceKm} km
+                  {arrivalStats.distanceKm} km
                 </LCText>
                 <LCText style={s.statLbl}>Distance</LCText>
               </View>
@@ -1452,7 +1494,7 @@ export default function MapTracking({ route }) {
                   color={C.sub}
                 />
                 <LCText style={s.statVal}>
-                  {avgSpeed} km/h
+                  {arrivalStats.avgSpeed} km/h
                 </LCText>
                 <LCText style={s.statLbl}>Avg Speed</LCText>
               </View>
@@ -1732,6 +1774,12 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(37,99,235,0.18)",
     borderWidth: 1.5,
     borderColor: "rgba(37,99,235,0.6)",
+  },
+  deviceMarker: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
   },
   blueDot: {
     width: 14,

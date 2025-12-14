@@ -149,6 +149,14 @@ function prettyScanError(raw) {
     return "This QR code is not recognized by LigtasCommute. Please scan the bus QR provided by the system.";
   }
 
+  if (lower.includes("bus is inactive") || lower.includes("inactive bus")) {
+    return "This bus is currently marked as inactive in LigtasCommute. Please confirm the bus number or scan another bus.";
+  }
+
+  if (lower.includes("maintenance") || lower.includes("in maintenance")) {
+    return "This bus is currently under maintenance and cannot be joined right now.";
+  }
+
   if (lower.includes("unauthorized") || lower.includes("token")) {
     return "Your session expired. Please log in again and try scanning the bus QR once more.";
   }
@@ -165,6 +173,24 @@ function buildAvatarUrl(raw) {
 
   return `${base}${raw.startsWith("/") ? raw : "/" + raw}`;
 }
+
+const busStatusLabel = (status) => {
+  if (!status) return "—";
+  const up = String(status).toUpperCase();
+  if (up === "ACTIVE") return "Active";
+  if (up === "IN_MAINTENANCE") return "In maintenance";
+  if (up === "INACTIVE") return "Inactive";
+  return status;
+};
+
+const busStatusColor = (status) => {
+  if (!status) return C.sub;
+  const up = String(status).toUpperCase();
+  if (up === "ACTIVE") return C.green;
+  if (up === "IN_MAINTENANCE") return C.amber;
+  if (up === "INACTIVE") return C.redDark;
+  return C.sub;
+};
 
 export default function BusScanner({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -263,20 +289,26 @@ export default function BusScanner({ navigation }) {
       null;
 
     const routeLabel =
-      out.routeLabel ?? out.bus?.routeLabel ?? out.bus?.route ?? out.route ?? null;
+      out.routeLabel ??
+      out.bus?.routeLabel ??
+      out.bus?.route ??
+      out.route ??
+      null;
 
-    const status =
-      out.status ??
+    // ----- DRIVER DUTY STATUS -----
+    const dutyStatus =
+      out.dutyStatus ??
       out.driverStatus ??
       out.onDutyStatus ??
       out.on_duty_status ??
+      out.status ?? // backend sends driver status as `status`
       null;
 
     const onDuty =
       out.onDuty ??
       out.isOnDuty ??
       out.is_on_duty ??
-      status === "ON_DUTY" ??
+      (dutyStatus === "ON_DUTY") ??
       false;
 
     const rawAvatar =
@@ -288,6 +320,38 @@ export default function BusScanner({ navigation }) {
       null;
 
     const avatar = rawAvatar ? buildAvatarUrl(rawAvatar) : null;
+
+    // ----- BUS STATUS (from backend) -----
+    const rawBusStatus =
+      out.busStatus ?? // <--- explicit from API
+      out.bus_status ??
+      out.bus_status_text ??
+      out.bus?.status ??
+      out.bus?.busStatus ??
+      null;
+
+    const rawBusIsActive =
+      out.busIsActive ??
+      out.bus_is_active ??
+      out.isActive ??
+      out.active ??
+      out.bus?.isActive ??
+      out.bus?.active ??
+      null;
+
+    let finalBusStatus = null;
+    if (rawBusStatus) {
+      const up = String(rawBusStatus).toUpperCase();
+      if (["ACTIVE", "INACTIVE", "IN_MAINTENANCE"].includes(up)) {
+        finalBusStatus = up;
+      }
+    }
+
+    if (!finalBusStatus && typeof rawBusIsActive === "boolean") {
+      finalBusStatus = rawBusIsActive ? "ACTIVE" : "INACTIVE";
+    }
+
+    const busIsActive = finalBusStatus === "ACTIVE" || rawBusIsActive === true;
 
     return {
       id: driverProfileId,
@@ -314,11 +378,16 @@ export default function BusScanner({ navigation }) {
       returnRoute,
       routeLabel,
 
-      status,
+      dutyStatus,
+      status: dutyStatus,
       onDuty: !!onDuty,
 
       avatar,
       profileUrl: avatar,
+
+      // ✅ bus status info
+      busStatus: finalBusStatus, // "ACTIVE" | "INACTIVE" | "IN_MAINTENANCE" | null
+      busIsActive,
 
       scannedAt: new Date(),
     };
@@ -346,6 +415,7 @@ export default function BusScanner({ navigation }) {
         );
       }
 
+      // ✅ CORRECT ENDPOINT
       const res = await fetch(`${API_URL}/commuter/scan-bus`, {
         method: "POST",
         headers: {
@@ -458,6 +528,10 @@ export default function BusScanner({ navigation }) {
     );
   }
 
+  // ✅ BLOCK START TRACKING WHEN BUS IS INACTIVE OR IN MAINTENANCE
+  const startTrackingDisabled =
+    driver?.busStatus === "INACTIVE" || driver?.busStatus === "IN_MAINTENANCE";
+
   return (
     <SafeAreaView style={s.screen}>
       <StatusBar barStyle="dark-content" backgroundColor={C.bg} />
@@ -536,6 +610,7 @@ export default function BusScanner({ navigation }) {
         </TouchableOpacity>
       </View>
 
+      {/* INFO MODAL */}
       <Modal
         visible={infoOpen}
         transparent
@@ -632,6 +707,7 @@ export default function BusScanner({ navigation }) {
               </TouchableOpacity>
             </View>
 
+            {/* ASSIGNED BUS */}
             <View style={[s.infoBox, { marginTop: 14 }]}>
               <View style={{ flexDirection: "row", alignItems: "center" }}>
                 <MaterialCommunityIcons
@@ -675,6 +751,7 @@ export default function BusScanner({ navigation }) {
               </View>
             </View>
 
+            {/* ROUTE & CORRIDOR */}
             <View style={[s.infoBox, { marginTop: 10 }]}>
               <View style={{ flexDirection: "row", alignItems: "center" }}>
                 <MaterialCommunityIcons
@@ -709,6 +786,51 @@ export default function BusScanner({ navigation }) {
               </View>
             </View>
 
+            {/* WARNINGS */}
+            {driver?.busStatus === "INACTIVE" && (
+              <View style={s.busWarningBox}>
+                <MaterialCommunityIcons
+                  name="bus-alert"
+                  size={18}
+                  color={C.redDark}
+                  style={{ marginRight: 6 }}
+                />
+                <LCText variant="tiny" style={[s.busWarningText, s.f400]}>
+                  This bus is marked as{" "}
+                  <LCText
+                    variant="tiny"
+                    style={{ fontWeight: "700", color: C.redDark }}
+                  >
+                    inactive
+                  </LCText>{" "}
+                  in LigtasCommute. Old QR stickers should no longer be used by
+                  commuters.
+                </LCText>
+              </View>
+            )}
+
+            {driver?.busStatus === "IN_MAINTENANCE" && (
+              <View style={s.busWarningBox}>
+                <MaterialCommunityIcons
+                  name="wrench"
+                  size={18}
+                  color={C.amber}
+                  style={{ marginRight: 6 }}
+                />
+                <LCText variant="tiny" style={[s.busWarningText, s.f400]}>
+                  This bus is currently{" "}
+                  <LCText
+                    variant="tiny"
+                    style={{ fontWeight: "700", color: C.amber }}
+                  >
+                    under maintenance
+                  </LCText>
+                  . If commuters scan this QR, the app should show that the bus
+                  is temporarily unavailable.
+                </LCText>
+              </View>
+            )}
+
             {!isOnDuty && (
               <View style={s.offDutyBox}>
                 <MaterialCommunityIcons
@@ -731,8 +853,12 @@ export default function BusScanner({ navigation }) {
             )}
 
             <TouchableOpacity
-              style={[s.primaryBtn, { marginTop: 14 }]}
+              style={[
+                s.primaryBtn,
+                { marginTop: 14, opacity: startTrackingDisabled ? 0.5 : 1 },
+              ]}
               onPress={() => {
+                if (startTrackingDisabled) return;
                 setInfoOpen(false);
                 navigation.navigate("MapTracking", {
                   driver,
@@ -742,13 +868,16 @@ export default function BusScanner({ navigation }) {
               }}
             >
               <LCText variant="label" style={[s.primaryBtnTxt, s.f600]}>
-                Start Tracking
+                {startTrackingDisabled
+                  ? "Tracking unavailable for this bus"
+                  : "Start Tracking"}
               </LCText>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
+      {/* ERROR MODAL */}
       <Modal
         visible={errorModalVisible}
         transparent
@@ -944,6 +1073,18 @@ const s = StyleSheet.create({
     paddingHorizontal: 4,
   },
   offDutyText: {
+    flex: 1,
+    fontSize: 10,
+    color: C.redDark,
+  },
+
+  busWarningBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    marginTop: 10,
+    paddingHorizontal: 4,
+  },
+  busWarningText: {
     flex: 1,
     fontSize: 10,
     color: C.redDark,

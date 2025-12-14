@@ -130,6 +130,7 @@ export default function DriverTripHistory({ navigation }) {
     setRefreshing(false);
   }, [loadTrips, driverId]);
 
+  // Sorting trips based on order
   const sortedTrips = [...trips].sort((a, b) => {
     const getTime = (t) => {
       const d = new Date(t.startedAt || 0);
@@ -185,6 +186,36 @@ export default function DriverTripHistory({ navigation }) {
   };
 
   const totalTrips = trips.length;
+
+  // Function to save trips to AsyncStorage
+  const saveTrips = async (newTrips) => {
+    try {
+      await AsyncStorage.setItem(TRIP_HISTORY_KEY, JSON.stringify(newTrips));
+    } catch (e) {
+      console.log("[DriverTripHistory] Failed to save trips", e);
+    }
+  };
+
+  // Add a new trip
+  const addTrip = async (newTrip) => {
+    const updatedTrips = [...trips, newTrip];
+    setTrips(updatedTrips);
+    await saveTrips(updatedTrips);  // Save trips after adding the new one
+  };
+
+  // Example function to simulate adding a new trip (replace this with your actual logic for a new trip)
+  const handleAddNewTrip = () => {
+    const newTrip = {
+      id: `${new Date().getTime()}`,  // Unique ID based on current time
+      driverId: driverId,            // Assuming `driverId` is already set
+      startedAt: new Date().toISOString(), // Current time as the start time
+      endedAt: null,                  // End time is null initially
+      routeLabel: "Route A",          // Example route
+    };
+
+    // Call the addTrip function to add the new trip and save it
+    addTrip(newTrip);
+  };
 
   if (!fontsLoaded) {
     return (
@@ -275,6 +306,11 @@ export default function DriverTripHistory({ navigation }) {
           }
         />
       )}
+
+      {/* Example button to add a trip */}
+      <TouchableOpacity onPress={handleAddNewTrip}>
+        <LCText>Add New Trip</LCText>
+      </TouchableOpacity>
     </SafeAreaView>
   );
 }

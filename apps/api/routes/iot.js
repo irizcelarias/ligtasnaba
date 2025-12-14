@@ -97,18 +97,13 @@ router.post("/emergency", async (req, res) => {
     const incident = await prisma.emergencyIncident.create({
       data: {
         deviceId: finalDeviceId || "UNKNOWN_DEVICE",
-
         code: codeUpper,
         message: payload.message,
-
         latitude: payload.latitude ?? null,
         longitude: payload.longitude ?? null,
-
         status: "PENDING",
-
         busId,
         driverProfileId,
-
         busNumber,
         busPlate,
       },
@@ -138,15 +133,12 @@ router.post("/emergency", async (req, res) => {
 
 /* helper to normalize incidents (shared by active + history) */
 function mapIncident(i) {
-  // prefer stored columns, fallback to relation
   const busNumber = i.busNumber || i.bus?.number || null;
   const busPlate = i.busPlate || i.bus?.plate || null;
 
-  // driver name from DriverProfile relation
   const driverName = i.driver?.fullName || null;
 
   return {
-    // base fields from EmergencyIncident
     id: i.id,
     deviceId: i.deviceId,
     code: i.code,
@@ -160,9 +152,7 @@ function mapIncident(i) {
     busPlate,
     createdAt: i.createdAt,
     resolvedAt: i.resolvedAt,
-
-    // extra nested-ish fields used by frontend
-    driverName, // 🔴 this is what the dashboard reads
+    driverName,
     bus: i.bus
       ? {
           id: i.bus.id,
@@ -195,7 +185,6 @@ router.get("/emergencies", async (_req, res) => {
       },
     });
 
-    // map so we always have driverName / busNumber / busPlate fields
     const mapped = incidents.map(mapIncident);
 
     return res.json(mapped);

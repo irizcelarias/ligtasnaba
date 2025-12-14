@@ -12,6 +12,19 @@ const poppins = Poppins({
   weight: ["400", "500", "600", "700", "800"],
 });
 
+// small helper: fallback severity based on code
+function getSeverity(e) {
+  const sev = (e.severity || "").toString().trim();
+  if (sev) return sev;
+
+  const code = (e.code || "").toString().toUpperCase();
+  if (code === "YELLOW") return "Minor";
+  if (code === "ORANGE") return "Moderate";
+  if (code === "RED") return "High";
+
+  return "Not specified";
+}
+
 /* small date helpers */
 function todayInput() {
   const d = new Date();
@@ -157,7 +170,7 @@ export default function EmergencyReportsPage() {
           e.busNumber,
           e.deviceId,
           e.status,
-          e.severity,
+          getSeverity(e),
           e.code,
           e.message,
           locationText,
@@ -218,7 +231,7 @@ export default function EmergencyReportsPage() {
         e.busNumber || "",
         e.driverName || "",
         e.status || "",
-        e.severity || "",
+        getSeverity(e) || "",
         e.code || "",
         e.createdAt ? new Date(e.createdAt).toLocaleString() : "",
         e.resolvedAt ? new Date(e.resolvedAt).toLocaleString() : "",
@@ -371,7 +384,7 @@ export default function EmergencyReportsPage() {
                           <div style={S.infoRow}>
                             <span style={S.infoLabel}>Severity</span>
                             <span style={S.infoValue}>
-                              {e.severity || "—"}
+                              {getSeverity(e)}
                             </span>
                           </div>
                           <div style={S.infoRow}>
@@ -490,7 +503,7 @@ export default function EmergencyReportsPage() {
                   />
                   <ModalField
                     label="Severity"
-                    value={selected.severity || "—"}
+                    value={getSeverity(selected)}
                   />
                   <ModalField label="Code" value={selected.code || "—"} />
                 </div>
@@ -832,11 +845,11 @@ const styles = {
     zIndex: 40,
   },
   modal: {
-    width: "min(640px, 96vw)",
+    width: "min(520px, 92vw)",
     borderRadius: 16,
     border: "1px solid rgba(203,213,225,.9)",
     background: "#ffffff",
-    padding: 20,
+    padding: 18,
     boxShadow: "0 20px 60px rgba(15,23,42,.28)",
   },
   modalHeader: {
@@ -857,7 +870,7 @@ const styles = {
     fontSize: 13,
     color: "#374151",
     display: "grid",
-    gap: 16,
+    gap: 12,
   },
   modalFormGrid: {
     display: "grid",
@@ -889,14 +902,14 @@ const styles = {
   },
   fieldTextarea: {
     width: "100%",
-    minHeight: 80,
+    minHeight: 52,
     borderRadius: 10,
     border: "1px solid #E5E7EB",
     padding: "8px 10px",
     fontSize: 13,
     background: "#F9FAFB",
     color: "#111827",
-    resize: "vertical",
+    resize: "none",
     outline: "none",
   },
   noteGroup: {
