@@ -1,3 +1,4 @@
+// apps/api/routes/driver.iot.js
 import express from "express";
 import { PrismaClient } from "@prisma/client";
 import { requireAuth } from "../src/middleware/auth.js";
@@ -5,36 +6,48 @@ import { requireAuth } from "../src/middleware/auth.js";
 const prisma = new PrismaClient();
 const router = express.Router();
 
+/* ---------------- helpers ---------------- */
+
 function getUserId(req) {
   return req.user?.sub || req.user?.id || req.userId || null;
 }
 
 function requireDriver(req, res, next) {
   const role = req.user?.role;
-  if (role && role !== "DRIVER") return res.status(403).json({ error: "Drivers only" });
+  if (role && role !== "DRIVER") {
+    return res.status(403).json({ error: "Drivers only" });
+  }
   next();
 }
 
-function normalizeStatus(status) {
+function normalizeDriverStatus(status) {
   const s = String(status || "").trim().toUpperCase();
   if (s === "WORKING") return "WORKING";
-  if (s === "NEEDS_MAINTENANCE") return "NEEDS_MAINTENANCE";
   if (s === "NOT_WORKING") return "NOT_WORKING";
+  if (s === "NEEDS_MAINTENANCE") return "NEEDS_MAINTENANCE";
   return null;
 }
-
-// ✅ ping to confirm deployed
-router.get("/iot/ping", (req, res) => res.json({ ok: true }));
 
 /**
  * POST /driver/iot/report
  * body: { status, note? }
  */
 router.post("/iot/report", requireAuth, requireDriver, async (req, res) => {
+  // ✅ use exact Prisma client model accessor
+  const model = prisma.iotDeviceStatusReport;
+
+  if (!model) {
+    // if this happens, prisma client in Render is outdated
+    return res.status(500).json({
+      error:
+        "Prisma client missing model 'iotDeviceStatusReport'. Redeploy with prisma generate.",
+    });
+  }
+
   const userId = getUserId(req);
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-  const status = normalizeStatus(req.body?.status);
+  const status = normalizeDriverStatus(req.body?.status);
   const note = (req.body?.note ?? "").toString().trim() || null;
 
   if (!status) {
@@ -44,28 +57,35 @@ router.post("/iot/report", requireAuth, requireDriver, async (req, res) => {
   }
 
   try {
-    // resolve driver + bus + deviceId
+    // find driver profile + bus deviceId (optional)
+    let driverProfileId = null;
+    let busId = null;
+    let deviceId = null;
+
     const dp = await prisma.driverProfile.findUnique({
       where: { userId },
       include: { bus: true },
     });
 
-    const driverProfileId = dp?.driverId || null;
-    const busId = dp?.busId || dp?.bus?.id || null;
-    const deviceId = dp?.bus?.deviceId || null;
+    driverProfileId = dp?.driverId || null;
+    busId = dp?.busId || dp?.bus?.id || null;
+    deviceId = dp?.bus?.deviceId || null;
 
-    const created = await prisma.iotDeviceStatusReport.create({
+    const created = await model.create({
       data: {
         status,
         note,
-        driverProfileId,
-        busId,
         deviceId,
+        busId,
+        driverProfileId,
         adminStatus: "PENDING",
       },
     });
 
-    return res.json({ message: "IoT status report submitted.", item: created });
+    return res.json({
+      message: "IoT status report submitted.",
+      item: created,
+    });
   } catch (err) {
     console.log("[driver/iot/report] error:", err);
     return res.status(500).json({ error: "Failed to submit IoT report." });
