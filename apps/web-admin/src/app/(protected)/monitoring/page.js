@@ -1,7 +1,11 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { listIotDevices, listIotStatusReports } from "@/lib/api";
+import {
+  listIotDevices,
+  listIotStatusReports,
+  updateIotStatusReport,
+} from "@/lib/api";
 
 /* ---------------- helpers ---------------- */
 function formatDate(dateString) {
@@ -51,11 +55,11 @@ function badgeStyle(kind) {
     borderColor: "rgba(148,163,184,0.30)",
   };
 
-  if (["WORKING", "ONLINE", "RESOLVED"].includes(up)) return good;
-  if (["NEEDS_MAINTENANCE", "MAINTENANCE", "IN_PROGRESS"].includes(up))
-    return warn;
+  if (["WORKING", "ONLINE", "OK"].includes(up)) return good;
+  if (["NEEDS_MAINTENANCE", "MAINTENANCE", "IN_PROGRESS"].includes(up)) return warn;
   if (["NOT_WORKING", "OFFLINE"].includes(up)) return bad;
   if (["PENDING", "OPEN", "ACTIVE", "ONGOING"].includes(up)) return info;
+  if (["RESOLVED", "DONE", "CLOSED"].includes(up)) return good;
 
   return neutral;
 }
@@ -75,12 +79,17 @@ export default function MonitoringPage() {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState("NEWEST");
 
+  // edit modal
+  const [editOpen, setEditOpen] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [editAdminStatus, setEditAdminStatus] = useState("PENDING");
+  const [saving, setSaving] = useState(false);
+
   async function load() {
     try {
       setLoading(true);
       setErr("");
 
-      // ✅ use the shared API wrapper (adds Authorization header)
       const [devItems, repItems] = await Promise.all([
         listIotDevices(),
         listIotStatusReports(),
@@ -99,6 +108,28 @@ export default function MonitoringPage() {
   useEffect(() => {
     load();
   }, []);
+
+  function openEdit(report) {
+    setEditId(report.id);
+    setEditAdminStatus(String(report.adminStatus || "PENDING").toUpperCase());
+    setEditOpen(true);
+  }
+
+  async function saveEdit() {
+    if (!editId) return;
+    try {
+      setSaving(true);
+      await updateIotStatusReport(editId, editAdminStatus);
+      setEditOpen(false);
+      setEditId(null);
+      await load();
+    } catch (e) {
+      console.error("[IoT Monitoring] update error:", e);
+      setErr(e?.message || "Failed to update report.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const items = useMemo(() => {
     const devItems = (devices || []).map((d) => {
@@ -122,28 +153,33 @@ export default function MonitoringPage() {
 
     const repItems = (reports || []).map((r) => {
       const dt = r.createdAt || r.reportedAt || null;
-      const condition = r.condition || r.issueType || "—";
 
+      // NOTE: "DEVICE-0002" comes from r.deviceId (or fallback to bus.deviceId if your API provides it)
       return {
         type: "REPORT",
         key: `rep:${r.id}`,
+        id: r.id,
+
         title: r.driverName || "Driver report",
         meta: `Bus ${r.busNumber || "—"} · ${r.busPlate || "—"} · Device ${
           r.deviceId || "—"
         }`,
         date: dt,
-        badge: String(r.status || r.reportStatus || "PENDING").toUpperCase(),
+
+        // main condition badge = driver status
+        badge: String(r.status || "PENDING").toUpperCase(),
+
+        // admin side status (pending/resolved etc)
+        adminStatus: String(r.adminStatus || "PENDING").toUpperCase(),
 
         deviceId: r.deviceId || "—",
         busNumber: r.busNumber || "—",
         busPlate: r.busPlate || "—",
         driverName: r.driverName || "—",
-        condition,
-        notes: r.description || r.message || "—",
       };
     });
 
-    const all = [...devItems, ...repItems];
+    const all = [...repItems, ...devItems]; // show reports first
 
     const needle = q.trim().toLowerCase();
     const filtered = needle
@@ -155,9 +191,8 @@ export default function MonitoringPage() {
             x.busNumber,
             x.busPlate,
             x.driverName,
-            x.condition,
-            x.notes,
             x.badge,
+            x.adminStatus,
           ]
             .filter(Boolean)
             .join(" ")
@@ -229,9 +264,27 @@ export default function MonitoringPage() {
 
                   <div style={S.cardRight}>
                     <span style={S.cardDate}>{formatDate(x.date)}</span>
+
+                    {/* main status badge */}
                     <span style={{ ...S.badge, ...badgeStyle(x.badge) }}>
                       {x.badge}
                     </span>
+
+                    {/* admin status badge + edit button only for reports */}
+                    {x.type === "REPORT" && (
+                      <>
+                        <span style={{ ...S.badge, ...badgeStyle(x.adminStatus) }}>
+                          {x.adminStatus}
+                        </span>
+                        <button
+                          style={S.editBtn}
+                          onClick={() => openEdit(x)}
+                          title="Update admin status"
+                        >
+                          Edit
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -283,7 +336,7 @@ export default function MonitoringPage() {
 
                         <div style={S.row}>
                           <span style={S.label}>Condition</span>
-                          <span style={S.value}>{x.condition}</span>
+                          <span style={S.value}>{x.badge}</span>
                         </div>
 
                         <div style={S.row}>
@@ -310,10 +363,7 @@ export default function MonitoringPage() {
                           <span style={S.value}>{x.busPlate}</span>
                         </div>
 
-                        <div style={S.row}>
-                          <span style={S.label}>Notes</span>
-                          <span style={S.value}>{x.notes}</span>
-                        </div>
+                        {/* ✅ removed NOTES */}
                       </div>
                     </>
                   )}
@@ -323,11 +373,50 @@ export default function MonitoringPage() {
           )}
         </div>
       </section>
+
+      {/* ---------------- Edit Modal ---------------- */}
+      {editOpen && (
+        <div style={S.modalOverlay} onMouseDown={() => !saving && setEditOpen(false)}>
+          <div style={S.modal} onMouseDown={(e) => e.stopPropagation()}>
+            <div style={S.modalTitle}>Update report status</div>
+            <div style={S.modalSub}>Set admin status (e.g., PENDING / RESOLVED).</div>
+
+            <div style={{ marginTop: 12 }}>
+              <div style={S.groupLabel}>ADMIN STATUS</div>
+              <select
+                style={{ ...S.select, width: "100%", marginTop: 8 }}
+                value={editAdminStatus}
+                onChange={(e) => setEditAdminStatus(e.target.value)}
+                disabled={saving}
+              >
+                <option value="PENDING">PENDING</option>
+                <option value="NEEDS_CHECK">NEEDS_CHECK</option>
+                <option value="IN_PROGRESS">IN_PROGRESS</option>
+                <option value="RESOLVED">RESOLVED</option>
+                <option value="OK">OK</option>
+              </select>
+            </div>
+
+            <div style={S.modalActions}>
+              <button
+                style={S.cancelBtn}
+                onClick={() => setEditOpen(false)}
+                disabled={saving}
+              >
+                Cancel
+              </button>
+              <button style={S.saveBtn} onClick={saveEdit} disabled={saving}>
+                {saving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-/* ---------------- styles (theme-matching) ---------------- */
+/* ---------------- styles ---------------- */
 const styles = {
   page: {
     maxWidth: 1120,
@@ -400,6 +489,18 @@ const styles = {
     color: "var(--text)",
     fontSize: 13,
     fontWeight: 700,
+    cursor: "pointer",
+  },
+
+  editBtn: {
+    height: 30,
+    borderRadius: 999,
+    border: "1px solid var(--line)",
+    padding: "0 10px",
+    background: "transparent",
+    color: "var(--text)",
+    fontSize: 12,
+    fontWeight: 800,
     cursor: "pointer",
   },
 
@@ -485,5 +586,51 @@ const styles = {
     fontWeight: 700,
     fontSize: 13,
     overflowWrap: "anywhere",
+  },
+
+  // modal
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(2,6,23,0.45)",
+    display: "grid",
+    placeItems: "center",
+    padding: 16,
+    zIndex: 50,
+  },
+  modal: {
+    width: "100%",
+    maxWidth: 420,
+    background: "var(--card)",
+    border: "1px solid var(--line)",
+    borderRadius: 16,
+    padding: 16,
+    boxShadow: "0 30px 70px rgba(2,6,23,0.35)",
+  },
+  modalTitle: { fontSize: 16, fontWeight: 900 },
+  modalSub: { marginTop: 6, color: "var(--muted)", fontSize: 13 },
+  modalActions: {
+    marginTop: 16,
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 10,
+  },
+  cancelBtn: {
+    height: 40,
+    borderRadius: 12,
+    border: "1px solid var(--line)",
+    padding: "0 14px",
+    background: "transparent",
+    fontWeight: 800,
+    cursor: "pointer",
+  },
+  saveBtn: {
+    height: 40,
+    borderRadius: 12,
+    border: "1px solid var(--line)",
+    padding: "0 14px",
+    background: "rgba(59,130,246,0.12)",
+    fontWeight: 900,
+    cursor: "pointer",
   },
 };

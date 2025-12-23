@@ -7,7 +7,6 @@ const prisma = new PrismaClient();
 const router = express.Router();
 
 /* ---------------- helpers ---------------- */
-
 function getUserId(req) {
   return req.user?.sub || req.user?.id || req.userId || null;
 }
@@ -33,17 +32,6 @@ function normalizeDriverStatus(status) {
  * body: { status, note? }
  */
 router.post("/iot/report", requireAuth, requireDriver, async (req, res) => {
-  // ✅ use exact Prisma client model accessor
-  const model = prisma.iotDeviceStatusReport;
-
-  if (!model) {
-    // if this happens, prisma client in Render is outdated
-    return res.status(500).json({
-      error:
-        "Prisma client missing model 'iotDeviceStatusReport'. Redeploy with prisma generate.",
-    });
-  }
-
   const userId = getUserId(req);
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
@@ -57,28 +45,23 @@ router.post("/iot/report", requireAuth, requireDriver, async (req, res) => {
   }
 
   try {
-    // find driver profile + bus deviceId (optional)
-    let driverProfileId = null;
-    let busId = null;
-    let deviceId = null;
-
+    // find driver profile + (optional) bus + deviceId
     const dp = await prisma.driverProfile.findUnique({
       where: { userId },
       include: { bus: true },
     });
 
-    driverProfileId = dp?.driverId || null;
-    busId = dp?.busId || dp?.bus?.id || null;
-    deviceId = dp?.bus?.deviceId || null;
+    const driverProfileId = dp?.driverId || null;
+    const busId = dp?.busId || dp?.bus?.id || null;
+    const deviceId = dp?.bus?.deviceId || null;
 
-    const created = await model.create({
+    const created = await prisma.iotDeviceStatusReport.create({
       data: {
         status,
         note,
         deviceId,
         busId,
         driverProfileId,
-        adminStatus: "PENDING",
       },
     });
 
