@@ -88,7 +88,6 @@ export async function getBus(id) {
 }
 
 export async function createBus(payload) {
-  // payload: { number, plate, busType, status?, corridor?, isActive?, routeId?, forwardRoute?, returnRoute? }
   return request("/buses", {
     method: "POST",
     body: payload,
@@ -103,7 +102,6 @@ export async function updateBus(id, payload) {
 }
 
 export async function setBusStatus(id, status) {
-  // convenience: only update status
   return updateBus(id, { status });
 }
 
@@ -199,18 +197,13 @@ export async function listIncidents(params = {}) {
   const qs = new URLSearchParams(params).toString();
 
   try {
-    // primary admin incidents endpoint
     return await request(`/admin/incidents${qs ? `?${qs}` : ""}`);
   } catch (err) {
     if (err.status === 404) {
-      // fallback to generic emergency-incidents
       try {
         return await request(`/emergency-incidents${qs ? `?${qs}` : ""}`);
       } catch (err2) {
-        // if this also doesn't exist, just return empty list
-        if (err2.status === 404) {
-          return [];
-        }
+        if (err2.status === 404) return [];
         throw err2;
       }
     }
@@ -222,45 +215,33 @@ export async function listEmergencies(params = {}) {
   const qs = new URLSearchParams(params).toString();
 
   try {
-    const data = await request(
-      `/iot/emergencies/history${qs ? `?${qs}` : ""}`
-    );
+    const data = await request(`/iot/emergencies/history${qs ? `?${qs}` : ""}`);
     if (Array.isArray(data?.items)) return data.items;
     if (Array.isArray(data)) return data;
     return [];
   } catch (err) {
-    if (err.status !== 404) {
-      throw err;
-    }
+    if (err.status !== 404) throw err;
   }
 
-  // 2) Fallback: admin emergencies endpoint (if exists)
   try {
     const data = await request(`/admin/emergencies${qs ? `?${qs}` : ""}`);
     if (Array.isArray(data?.items)) return data.items;
     if (Array.isArray(data)) return data;
     return [];
   } catch (err2) {
-    if (err2.status !== 404) {
-      throw err2;
-    }
+    if (err2.status !== 404) throw err2;
   }
 
   try {
-    const data2 = await request(
-      `/emergency-incidents${qs ? `?${qs}` : ""}`
-    );
+    const data2 = await request(`/emergency-incidents${qs ? `?${qs}` : ""}`);
     if (Array.isArray(data2?.items)) return data2.items;
     if (Array.isArray(data2)) return data2;
     return [];
   } catch (err3) {
-    if (err3.status === 404) {
-      return [];
-    }
+    if (err3.status === 404) return [];
     throw err3;
   }
 }
-
 
 export async function listIotEmergencies(params = {}) {
   const qs = new URLSearchParams(params).toString();
@@ -270,19 +251,116 @@ export async function listIotEmergencies(params = {}) {
   return [];
 }
 
+/* ---------- ✅ IOT DEVICES + STATUS REPORTS (ADMIN MONITORING) ---------- */
+/**
+ * listIotDevices()
+ * - used by web-admin monitoring page
+ * - supports multiple possible backend paths
+ * - always returns array
+ */
+export async function listIotDevices(params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  const pathsToTry = [
+    `/admin/iot/devices${qs ? `?${qs}` : ""}`,
+    `/iot/devices${qs ? `?${qs}` : ""}`,
+    `/admin/devices${qs ? `?${qs}` : ""}`,
+    `/devices${qs ? `?${qs}` : ""}`,
+  ];
+
+  let lastErr = null;
+
+  for (const p of pathsToTry) {
+    try {
+      const data = await request(p);
+      if (Array.isArray(data)) return data;
+      if (Array.isArray(data?.items)) return data.items;
+      if (Array.isArray(data?.devices)) return data.devices;
+      return [];
+    } catch (e) {
+      lastErr = e;
+      if (e?.status !== 404) throw e;
+    }
+  }
+
+  if (lastErr && lastErr.status && lastErr.status !== 404) throw lastErr;
+  return [];
+}
+
+/**
+ * listIotStatusReports()
+ * - driver submits: POST /driver/iot/report
+ * - admin views here: GET /admin/iot/status-reports
+ * - always returns array
+ */
+export async function listIotStatusReports(params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  const pathsToTry = [
+    `/admin/iot/status-reports${qs ? `?${qs}` : ""}`,
+    `/iot/status-reports${qs ? `?${qs}` : ""}`,
+    `/admin/iot/reports${qs ? `?${qs}` : ""}`,
+  ];
+
+  let lastErr = null;
+
+  for (const p of pathsToTry) {
+    try {
+      const data = await request(p);
+      if (Array.isArray(data)) return data;
+      if (Array.isArray(data?.items)) return data.items;
+      return [];
+    } catch (e) {
+      lastErr = e;
+      if (e?.status !== 404) throw e;
+    }
+  }
+
+  if (lastErr && lastErr.status && lastErr.status !== 404) throw lastErr;
+  return [];
+}
+
+/**
+ * updateIotStatusReport(id, adminStatus)
+ * - admin sets status: OK / PENDING / NEEDS_CHECK / RESOLVED etc.
+ * - tries common paths
+ */
+export async function updateIotStatusReport(id, adminStatus) {
+  const payload = { adminStatus };
+
+  const pathsToTry = [
+    `/admin/iot/status-reports/${id}`,
+    `/iot/status-reports/${id}`,
+    `/admin/iot/reports/${id}`,
+  ];
+
+  let lastErr = null;
+
+  for (const p of pathsToTry) {
+    try {
+      return await request(p, {
+        method: "PATCH",
+        body: payload,
+      });
+    } catch (e) {
+      lastErr = e;
+      if (e?.status !== 404) throw e;
+    }
+  }
+
+  if (lastErr) throw lastErr;
+  throw new Error("Failed to update IoT status report (no matching route).");
+}
+
 /* ---------- TRIPS (ADMIN) ---------- */
 
 export async function listTrips(params = {}) {
   const qs = new URLSearchParams(params).toString();
 
   try {
-    // primary admin trips endpoint
     const data = await request(`/admin/trips${qs ? `?${qs}` : ""}`);
     if (Array.isArray(data?.items)) return data.items;
     if (Array.isArray(data)) return data;
     return [];
   } catch (err) {
-    // kung wala pa ang /admin/trips (404), try /trips
     if (err.status === 404) {
       try {
         const data = await request(`/trips${qs ? `?${qs}` : ""}`);
@@ -290,15 +368,10 @@ export async function listTrips(params = {}) {
         if (Array.isArray(data)) return data;
         return [];
       } catch (err2) {
-        // kung wala sad ang /trips, treat as walay data
-        if (err2.status === 404) {
-          return [];
-        }
+        if (err2.status === 404) return [];
         throw err2;
       }
     }
-
-    // other errors (500, 403, etc.) — i-throw gihapon
     throw err;
   }
 }
@@ -309,17 +382,13 @@ export async function listNotifications(params = {}) {
   const qs = new URLSearchParams(params).toString();
 
   try {
-    // admin notifications (for bell)
     return await request(`/admin/notifications${qs ? `?${qs}` : ""}`);
   } catch (err) {
     if (err.status === 404) {
-      // fallback to generic /notifications
       try {
         return await request(`/notifications${qs ? `?${qs}` : ""}`);
       } catch (err2) {
-        if (err2.status === 404) {
-          return [];
-        }
+        if (err2.status === 404) return [];
         throw err2;
       }
     }

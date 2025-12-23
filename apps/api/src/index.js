@@ -40,6 +40,9 @@ import adminIncidentsRouter from "../routes/admin.incidents.js";
 import adminSettingsRoutes from "../routes/admin.settings.js";
 import iotRouter from "../routes/iot.js";
 import adminTripsRouter from "../routes/admin-trips.js";
+import driverIotRouter from "../routes/driver.iot.js";
+import adminIotRouter from "../routes/admin.iot.js";
+
 
 const app = express();
 const prisma = new PrismaClient();
@@ -166,8 +169,10 @@ app.use("/driver", requireAuth, driverReportsRouter);
 
 // MOUNT IOT ROUTER UNDER /iot TO AVOID CONFLICTS
 app.use("/iot", iotRouter);
-
 app.use(adminTripsRouter);
+
+app.use("/driver", driverIotRouter);
+app.use("/admin", adminIotRouter);
 
 /* --- DRIVER DUTY STATUS (ON_DUTY / OFF_DUTY) --- */
 app.patch("/driver/duty", requireAuth, async (req, res) => {

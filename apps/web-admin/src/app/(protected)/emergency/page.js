@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { listEmergencies } from "@/lib/api";
+import { listEmergencies, listIncidents } from "@/lib/api";
 import { X as XIcon } from "lucide-react";
 import { Poppins } from "next/font/google";
 
@@ -12,20 +12,10 @@ const poppins = Poppins({
   weight: ["400", "500", "600", "700", "800"],
 });
 
-// small helper: fallback severity based on code
-function getSeverity(e) {
-  const sev = (e.severity || "").toString().trim();
-  if (sev) return sev;
+/* ===========================
+   Helpers (shared)
+=========================== */
 
-  const code = (e.code || "").toString().toUpperCase();
-  if (code === "YELLOW") return "Minor";
-  if (code === "ORANGE") return "Moderate";
-  if (code === "RED") return "High";
-
-  return "Not specified";
-}
-
-/* small date helpers */
 function todayInput() {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -47,7 +37,6 @@ function inRange(createdAt, from, to) {
   if (Number.isNaN(d.getTime())) return false;
   if (from && d < from) return false;
   if (to) {
-    // make `to` inclusive (end of day)
     const end = new Date(to);
     end.setHours(23, 59, 59, 999);
     if (d > end) return false;
@@ -55,20 +44,110 @@ function inRange(createdAt, from, to) {
   return true;
 }
 
-// small helper: unified location text
+function downloadCsv(filename, header, rows) {
+  const csv = [header, ...rows]
+    .map((row) =>
+      row
+        .map((cell) => {
+          const v = String(cell ?? "");
+          if (v.includes(",") || v.includes('"') || v.includes("\n")) {
+            return `"${v.replace(/"/g, '""')}"`;
+          }
+          return v;
+        })
+        .join(",")
+    )
+    .join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* Emergency helpers */
+function getSeverity(e) {
+  const sev = (e.severity || "").toString().trim();
+  if (sev) return sev;
+
+  const code = (e.code || "").toString().toUpperCase();
+  if (code === "YELLOW") return "Minor";
+  if (code === "ORANGE") return "Moderate";
+  if (code === "RED") return "High";
+  return "Not specified";
+}
+
 function getLocationText(e) {
   if (e.locationText) return e.locationText;
 
   const lat = e.latitude ?? e.lat ?? null;
   const lng = e.longitude ?? e.lng ?? null;
 
-  if (lat != null && lng != null) {
-    return `${lat}, ${lng}`;
-  }
+  if (lat != null && lng != null) return `${lat}, ${lng}`;
   return "";
 }
 
-export default function EmergencyReportsPage() {
+/* small field */
+function ModalField({ label, value }) {
+  return (
+    <div style={S.fieldGroup}>
+      <label style={S.fieldLabel}>{label}</label>
+      <input style={S.fieldInput} value={value ?? "—"} readOnly />
+    </div>
+  );
+}
+
+/* ===========================
+   Page (2 tabs)
+=========================== */
+
+export default function ReportsTabsPage() {
+  const [tab, setTab] = useState("EMERGENCY"); // EMERGENCY | INCIDENT
+
+  return (
+    <div className={poppins.className} style={S.page}>
+      {/* Header + Tabs (underline style) */}
+      <div style={S.headerBlock}>
+        <h1 style={S.title}>Reports</h1>
+        <p style={S.sub}>
+          View history of resolved emergency alerts and incident reports.
+        </p>
+
+        <div style={S.tabsRow}>
+          <button
+            type="button"
+            onClick={() => setTab("EMERGENCY")}
+            style={S.textTab(tab === "EMERGENCY")}
+          >
+            Emergency Reports
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setTab("INCIDENT")}
+            style={S.textTab(tab === "INCIDENT")}
+          >
+            Incident Reports
+          </button>
+        </div>
+        <div style={S.tabsLine} />
+      </div>
+
+      {tab === "EMERGENCY" ? <EmergencyReportsTab /> : <IncidentReportsTab />}
+    </div>
+  );
+}
+
+/* ===========================
+   TAB 1: Emergency Reports
+=========================== */
+
+function EmergencyReportsTab() {
   const [loading, setLoading] = useState(false);
   const [flash, setFlash] = useState({ type: "", text: "" });
 
@@ -95,35 +174,22 @@ export default function EmergencyReportsPage() {
       setLoading(true);
       const res = await listEmergencies();
 
-      // flex: support { items: [...] } or plain array
       const raw = Array.isArray(res?.items)
         ? res.items
         : Array.isArray(res)
         ? res
         : [];
 
-      // 🔁 Reports page = NON-ACTIVE incidents (history)
-      const resolved = raw.filter((e) => {
+      // Reports tab = history (exclude active/pending)
+      const history = raw.filter((e) => {
         const st = (e.status || "").toString().toUpperCase();
-
-        // same active statuses as dashboard (PENDING / ACTIVE / OPEN / ONGOING)
-        if (
-          st === "PENDING" ||
-          st === "ACTIVE" ||
-          st === "OPEN" ||
-          st === "ONGOING"
-        ) {
+        if (st === "PENDING" || st === "ACTIVE" || st === "OPEN" || st === "ONGOING")
           return false;
-        }
-
-        // if no status but has resolvedAt, treat as historical
         if (!st && e.resolvedAt) return true;
-
-        // anything else (RESOLVED, CLOSED, DISMISSED, etc.) goes here
         return !!st || !!e.resolvedAt;
       });
 
-      setItems(resolved);
+      setItems(history);
       setPage(1);
     } catch (err) {
       console.error("LOAD EMERGENCIES (reports) ERROR:", err);
@@ -164,7 +230,6 @@ export default function EmergencyReportsPage() {
     if (normalizedSearch) {
       list = list.filter((e) => {
         const locationText = getLocationText(e);
-
         const target = [
           e.driverName,
           e.busNumber,
@@ -183,7 +248,6 @@ export default function EmergencyReportsPage() {
       });
     }
 
-    // newest first
     return [...list].sort((a, b) => {
       const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
       const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
@@ -224,7 +288,6 @@ export default function EmergencyReportsPage() {
 
     const rows = filtered.map((e) => {
       const locationText = getLocationText(e);
-
       return [
         e.id || "",
         e.deviceId || "",
@@ -240,49 +303,14 @@ export default function EmergencyReportsPage() {
       ];
     });
 
-    const csv = [header, ...rows]
-      .map((row) =>
-        row
-          .map((cell) => {
-            const v = String(cell ?? "");
-            if (v.includes(",") || v.includes('"') || v.includes("\n")) {
-              return `"${v.replace(/"/g, '""')}"`;
-            }
-            return v;
-          })
-          .join(",")
-      )
-      .join("\n");
-
-    const blob = new Blob([csv], {
-      type: "text/csv;charset=utf-8;",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "emergency-reports.csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadCsv("emergency-reports.csv", header, rows);
   }
 
-  const S = styles;
-
   return (
-    <div className={poppins.className} style={S.page}>
-      {/* Header */}
-      <div>
-        <h1 style={S.title}>Emergency Reports</h1>
-        <p style={S.sub}>
-          View history of resolved emergency alerts from LigtasCommute devices.
-        </p>
-      </div>
-
-      {/* Filters card */}
+    <>
+      {/* Filters */}
       <section style={S.card}>
         <div style={S.filterRow}>
-          {/* Search FIRST */}
           <div style={S.searchWrapper}>
             <input
               style={S.searchInput}
@@ -292,7 +320,6 @@ export default function EmergencyReportsPage() {
             />
           </div>
 
-          {/* From date */}
           <div style={S.filterField}>
             <div style={S.filterLabel}>From</div>
             <input
@@ -304,7 +331,6 @@ export default function EmergencyReportsPage() {
             />
           </div>
 
-          {/* To date */}
           <div style={S.filterField}>
             <div style={S.filterLabel}>To</div>
             <input
@@ -316,19 +342,17 @@ export default function EmergencyReportsPage() {
             />
           </div>
 
-          {/* Reset */}
           <button type="button" onClick={resetFilters} style={S.resetBtn}>
             Reset
           </button>
 
-          {/* Export CSV */}
           <button type="button" style={S.exportBtn} onClick={exportExcel}>
             Export CSV
           </button>
         </div>
       </section>
 
-      {/* Reports list card */}
+      {/* List */}
       <section style={S.listCard}>
         {flash.text && (
           <div aria-live="polite" role="status" style={S.flash(flash.type)}>
@@ -354,24 +378,21 @@ export default function EmergencyReportsPage() {
                 return (
                   <article key={e.id} style={S.item}>
                     <div style={S.itemMain}>
-                      {/* header row similar to incidents */}
                       <div style={S.itemHeaderRow}>
                         <div style={S.itemTitleRow}>
                           <span style={S.itemTitle}>
                             Bus {e.busNumber || "—"}
                           </span>
                           {e.deviceId && (
-                            <span style={S.deviceTag}>
-                              Device {e.deviceId}
-                            </span>
+                            <span style={S.deviceTag}>Device {e.deviceId}</span>
                           )}
                         </div>
-                        <div style={S.statusPill(e.status)}>
+
+                        <div style={S.statusPill(e.status || "RESOLVED")}>
                           {e.status || "RESOLVED"}
                         </div>
                       </div>
 
-                      {/* info grid similar to incidents card */}
                       <div style={S.infoGrid}>
                         <div>
                           <div style={S.sectionHeader}>EMERGENCY INFO</div>
@@ -383,9 +404,7 @@ export default function EmergencyReportsPage() {
                           </div>
                           <div style={S.infoRow}>
                             <span style={S.infoLabel}>Severity</span>
-                            <span style={S.infoValue}>
-                              {getSeverity(e)}
-                            </span>
+                            <span style={S.infoValue}>{getSeverity(e)}</span>
                           </div>
                           <div style={S.infoRow}>
                             <span style={S.infoLabel}>Code</span>
@@ -421,7 +440,6 @@ export default function EmergencyReportsPage() {
                       </div>
                     </div>
 
-                    {/* footer: View details */}
                     <div style={S.cardFooter}>
                       <button
                         type="button"
@@ -436,7 +454,6 @@ export default function EmergencyReportsPage() {
               })}
             </div>
 
-            {/* bottom-right pagination with arrows */}
             <div style={S.paginationBottom}>
               <button
                 type="button"
@@ -462,7 +479,7 @@ export default function EmergencyReportsPage() {
         )}
       </section>
 
-      {/* DETAILS MODAL – read-only (reports lang) */}
+      {/* Modal */}
       {selected && (
         <div style={S.modalBackdrop}>
           <div style={S.modal}>
@@ -479,37 +496,22 @@ export default function EmergencyReportsPage() {
 
             <div style={S.modalBody}>
               <div style={S.modalFormGrid}>
-                {/* LEFT COLUMN */}
                 <div style={S.formColumn}>
-                  <ModalField
-                    label="Bus"
-                    value={selected.busNumber || "—"}
-                  />
+                  <ModalField label="Bus" value={selected.busNumber || "—"} />
                   <ModalField
                     label="Driver"
                     value={selected.driverName || "Unknown driver"}
                   />
-                  <ModalField
-                    label="Device ID"
-                    value={selected.deviceId || "—"}
-                  />
+                  <ModalField label="Device ID" value={selected.deviceId || "—"} />
                 </div>
 
-                {/* RIGHT COLUMN */}
                 <div style={S.formColumn}>
-                  <ModalField
-                    label="Status"
-                    value={selected.status || "RESOLVED"}
-                  />
-                  <ModalField
-                    label="Severity"
-                    value={getSeverity(selected)}
-                  />
+                  <ModalField label="Status" value={selected.status || "RESOLVED"} />
+                  <ModalField label="Severity" value={getSeverity(selected)} />
                   <ModalField label="Code" value={selected.code || "—"} />
                 </div>
               </div>
 
-              {/* Timeline */}
               <div style={S.noteGroup}>
                 <label style={S.fieldLabel}>Timeline</label>
                 <textarea
@@ -518,14 +520,10 @@ export default function EmergencyReportsPage() {
                   value={
                     [
                       selected.createdAt
-                        ? `Triggered at: ${new Date(
-                            selected.createdAt
-                          ).toLocaleString()}`
+                        ? `Triggered at: ${new Date(selected.createdAt).toLocaleString()}`
                         : null,
                       selected.resolvedAt
-                        ? `Resolved at: ${new Date(
-                            selected.resolvedAt
-                          ).toLocaleString()}`
+                        ? `Resolved at: ${new Date(selected.resolvedAt).toLocaleString()}`
                         : null,
                     ]
                       .filter(Boolean)
@@ -534,7 +532,6 @@ export default function EmergencyReportsPage() {
                 />
               </div>
 
-              {/* Message / notes */}
               <div style={S.noteGroup}>
                 <label style={S.fieldLabel}>Message</label>
                 <textarea
@@ -548,15 +545,12 @@ export default function EmergencyReportsPage() {
                 />
               </div>
 
-              {/* Location */}
               <div style={S.noteGroup}>
                 <label style={S.fieldLabel}>Location</label>
                 <textarea
                   readOnly
                   style={S.fieldTextarea}
-                  value={
-                    getLocationText(selected) || "No location recorded."
-                  }
+                  value={getLocationText(selected) || "No location recorded."}
                 />
               </div>
 
@@ -573,24 +567,339 @@ export default function EmergencyReportsPage() {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
-/* small sub component */
-function ModalField({ label, value }) {
-  const S = styles;
+/* ===========================
+   TAB 2: Incident Reports (view-only)
+=========================== */
+
+function IncidentReportsTab() {
+  const [loading, setLoading] = useState(false);
+  const [flash, setFlash] = useState({ type: "", text: "" });
+
+  const [incidents, setIncidents] = useState([]);
+
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [search, setSearch] = useState("");
+
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 10;
+
+  const maxDate = todayInput();
+
+  function showFlash(type, text) {
+    setFlash({ type, text });
+    setTimeout(() => setFlash({ type: "", text: "" }), 1600);
+  }
+
+  async function loadIncidents() {
+    try {
+      setLoading(true);
+      const res = await listIncidents();
+      const items = Array.isArray(res?.items)
+        ? res.items
+        : Array.isArray(res)
+        ? res
+        : [];
+      setIncidents(items);
+      setPage(1);
+    } catch (err) {
+      console.error("LOAD INCIDENTS ERROR:", err);
+      showFlash("error", err.message || "Failed to load incidents.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadIncidents();
+  }, []);
+
+  useEffect(() => {
+    setPage(1);
+  }, [fromDate, toDate, search]);
+
+  function onFromChange(value) {
+    if (value && value > maxDate) return;
+    setFromDate(value);
+  }
+  function onToChange(value) {
+    if (value && value > maxDate) return;
+    setToDate(value);
+  }
+
+  const normalizedSearch = search.trim().toLowerCase();
+  const fromObj = parseDate(fromDate);
+  const toObj = parseDate(toDate);
+
+  const filtered = useMemo(() => {
+    let list = incidents;
+
+    if (fromObj || toObj) {
+      list = list.filter((item) => inRange(item.createdAt, fromObj, toObj));
+    }
+
+    if (normalizedSearch) {
+      list = list.filter((i) => {
+        const categoriesText = Array.isArray(i.categories)
+          ? i.categories
+              .map((c) => (c && (c.name || c)) || "")
+              .filter(Boolean)
+              .join(" ")
+          : "";
+
+        const target = [
+          i.driverName,
+          i.busNumber,
+          i.status,
+          i.note,
+          i.reporterName,
+          categoriesText,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+
+        return target.includes(normalizedSearch);
+      });
+    }
+
+    return [...list].sort((a, b) => {
+      const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bd - ad;
+    });
+  }, [incidents, normalizedSearch, fromObj, toObj]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  const pageItems = filtered.slice(startIndex, startIndex + PAGE_SIZE);
+
+  function resetFilters() {
+    setFromDate("");
+    setToDate("");
+    setSearch("");
+  }
+
+  function exportExcel() {
+    if (!filtered.length) {
+      showFlash("error", "No incident reports to export.");
+      return;
+    }
+
+    const header = [
+      "Report ID",
+      "Driver",
+      "Bus Number",
+      "Reporter",
+      "Status",
+      "Categories",
+      "Created At",
+      "Note",
+    ];
+
+    const rows = filtered.map((i) => {
+      const categoriesText =
+        Array.isArray(i.categories) && i.categories.length > 0
+          ? i.categories
+              .map((c) => (c && (c.name || c)) || "")
+              .filter(Boolean)
+              .join(" / ")
+          : "";
+
+      return [
+        i.id || "",
+        i.driverName || "",
+        i.busNumber || "",
+        i.reporterName || "",
+        i.status || "",
+        categoriesText,
+        i.createdAt ? new Date(i.createdAt).toLocaleString() : "",
+        (i.note || "").replace(/\r?\n/g, " "),
+      ];
+    });
+
+    downloadCsv("incident-reports.csv", header, rows);
+  }
+
   return (
-    <div style={S.fieldGroup}>
-      <label style={S.fieldLabel}>{label}</label>
-      <input style={S.fieldInput} value={value ?? "—"} readOnly />
-    </div>
+    <>
+      <section style={S.card}>
+        <div style={S.filterRow}>
+          <div style={S.searchWrapper}>
+            <input
+              style={S.searchInput}
+              placeholder="Search incidents..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          <div style={S.filterField}>
+            <div style={S.filterLabel}>From</div>
+            <input
+              type="date"
+              max={maxDate}
+              value={fromDate}
+              onChange={(e) => onFromChange(e.target.value)}
+              style={S.dateInput}
+            />
+          </div>
+
+          <div style={S.filterField}>
+            <div style={S.filterLabel}>To</div>
+            <input
+              type="date"
+              max={maxDate}
+              value={toDate}
+              onChange={(e) => onToChange(e.target.value)}
+              style={S.dateInput}
+            />
+          </div>
+
+          <button type="button" onClick={resetFilters} style={S.resetBtn}>
+            Reset
+          </button>
+
+          <button type="button" style={S.exportBtn} onClick={exportExcel}>
+            Export CSV
+          </button>
+        </div>
+      </section>
+
+      <section style={S.listCard}>
+        {flash.text && (
+          <div aria-live="polite" role="status" style={S.flash(flash.type)}>
+            {flash.text}
+          </div>
+        )}
+
+        {loading && incidents.length === 0 ? (
+          <div style={S.emptyWrapper}>
+            <div style={S.emptyTitle}>Loading incident reports…</div>
+          </div>
+        ) : pageItems.length === 0 ? (
+          <div style={S.emptyWrapper}>
+            <div style={S.emptyTitle}>No incident reports found</div>
+            <div style={S.emptySub}>Try different filters.</div>
+          </div>
+        ) : (
+          <>
+            <div style={S.list}>
+              {pageItems.map((r) => {
+                const categoriesText =
+                  Array.isArray(r.categories) && r.categories.length > 0
+                    ? r.categories
+                        .map((c) => (c && (c.name || c)) || "")
+                        .filter(Boolean)
+                        .join(" / ")
+                    : "";
+
+                return (
+                  <article key={r.id} style={S.item}>
+                    <div style={S.itemMain}>
+                      <div style={S.itemHeaderRow}>
+                        <div style={S.itemTitleRow}>
+                          <span style={S.itemTitle}>
+                            {r.driverName || "Unknown driver"}
+                          </span>
+                        </div>
+
+                        <div style={S.statusPill(r.status || "PENDING")}>
+                          {r.status || "PENDING"}
+                        </div>
+                      </div>
+
+                      <div style={S.infoGrid}>
+                        <div>
+                          <div style={S.sectionHeader}>REPORT INFORMATION</div>
+                          <div style={S.infoRow}>
+                            <span style={S.infoLabel}>Driver</span>
+                            <span style={S.infoValue}>
+                              {r.driverName || "Unknown driver"}
+                            </span>
+                          </div>
+                          <div style={S.infoRow}>
+                            <span style={S.infoLabel}>Bus number</span>
+                            <span style={S.infoValue}>{r.busNumber || "—"}</span>
+                          </div>
+                          <div style={S.infoRow}>
+                            <span style={S.infoLabel}>Reporter</span>
+                            <span style={S.infoValue}>
+                              {r.reporterName || "—"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={S.sectionHeader}>DETAILS</div>
+                          <div style={S.infoRow}>
+                            <span style={S.infoLabel}>Filed at</span>
+                            <span style={S.infoValue}>
+                              {r.createdAt
+                                ? new Date(r.createdAt).toLocaleString()
+                                : "—"}
+                            </span>
+                          </div>
+                          <div style={S.infoRow}>
+                            <span style={S.infoLabel}>Categories</span>
+                            <span style={S.infoValue}>
+                              {categoriesText || "None"}
+                            </span>
+                          </div>
+                          <div style={S.infoRow}>
+                            <span style={S.infoLabel}>Summary</span>
+                            <span style={S.infoValue}>
+                              {r.note && r.note.trim().length > 0
+                                ? r.note
+                                : "No note provided."}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+
+            <div style={S.paginationBottom}>
+              <button
+                type="button"
+                style={S.pageCircleBtn}
+                disabled={currentPage === 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                ‹
+              </button>
+              <span style={S.paginationLabel}>
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                type="button"
+                style={S.pageCircleBtn}
+                disabled={currentPage === totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                ›
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+    </>
   );
 }
 
-/* ---------- styles (same vibe as incidents) ---------- */
+/* ===========================
+   Styles (shared)
+=========================== */
 
-const styles = {
+const S = {
   page: {
     display: "grid",
     gap: 16,
@@ -598,8 +907,35 @@ const styles = {
     margin: "0 auto",
     padding: "0 16px 24px",
   },
+
+  /* header + underline tabs */
+  headerBlock: { display: "block" },
   title: { fontSize: 22, fontWeight: 800, margin: 0 },
   sub: { margin: "6px 0 0", color: "var(--muted)" },
+
+  tabsRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 22,
+    marginTop: 10,
+  },
+  textTab: (active) => ({
+    appearance: "none",
+    border: "none",
+    background: "transparent",
+    cursor: "pointer",
+    padding: "10px 0",
+    fontSize: 14,
+    fontWeight: active ? 700 : 600,
+    color: active ? "#0D658B" : "#6B7280",
+    borderBottom: active ? "2px solid #0D658B" : "2px solid transparent",
+  }),
+  tabsLine: {
+    width: "100%",
+    height: 1,
+    background: "#E5E7EB",
+    marginTop: -1,
+  },
 
   card: {
     background: "var(--card)",
@@ -615,6 +951,7 @@ const styles = {
   },
   filterField: { display: "grid", gap: 4 },
   filterLabel: { fontSize: 12, color: "#6B7280", fontWeight: 600 },
+
   dateInput: {
     borderRadius: 8,
     border: "1px solid #D4DBE7",
@@ -624,9 +961,7 @@ const styles = {
     color: "var(--text)",
     outline: "none",
   },
-  searchWrapper: {
-    width: "100%",
-  },
+  searchWrapper: { width: "100%" },
   searchInput: {
     width: "100%",
     borderRadius: 999,
@@ -636,6 +971,7 @@ const styles = {
     outline: "none",
     background: "#F9FBFF",
   },
+
   resetBtn: {
     borderRadius: 999,
     border: "1px solid #D4DBE7",
@@ -679,6 +1015,7 @@ const styles = {
         ? "1px solid rgba(248,113,113,.7)"
         : "1px solid rgba(74,222,128,.7)",
   }),
+
   emptyWrapper: {
     height: 240,
     display: "grid",
@@ -697,6 +1034,7 @@ const styles = {
     overflowY: "auto",
     paddingRight: 4,
   },
+
   item: {
     border: "1px solid #E2E8F0",
     borderRadius: 24,
@@ -719,6 +1057,7 @@ const styles = {
     flexWrap: "wrap",
   },
   itemTitle: { fontWeight: 800, fontSize: 16, color: "#0D658B" },
+
   deviceTag: {
     padding: "3px 9px",
     borderRadius: 999,
@@ -743,20 +1082,9 @@ const styles = {
     color: "#9CA3AF",
     marginBottom: 6,
   },
-  infoRow: {
-    display: "flex",
-    gap: 16,
-    fontSize: 13,
-    marginTop: 4,
-  },
-  infoLabel: {
-    width: 110,
-    color: "#6B7280",
-  },
-  infoValue: {
-    color: "#111827",
-    fontWeight: 500,
-  },
+  infoRow: { display: "flex", gap: 16, fontSize: 13, marginTop: 4 },
+  infoLabel: { width: 110, color: "#6B7280" },
+  infoValue: { color: "#111827", fontWeight: 500 },
 
   cardFooter: {
     display: "flex",
@@ -778,23 +1106,25 @@ const styles = {
   },
 
   statusPill: (status) => {
-    const s = (status || "RESOLVED").toUpperCase();
+    const s = (status || "PENDING").toUpperCase();
     let bg = "#E5E7EB";
     let border = "#CBD5F5";
     let color = "#4B5563";
-    if (s === "RESOLVED") {
+
+    if (s === "PENDING") {
+      bg = "#FEF3C7";
+      border = "#FBBF24";
+      color = "#92400E";
+    } else if (s === "RESOLVED" || s === "CLOSED") {
       bg = "#E8F9F0";
       border = "#86EFAC";
       color = "#166534";
-    } else if (s === "ACTIVE" || s === "PENDING") {
+    } else if (s === "ACTIVE" || s === "OPEN" || s === "ONGOING") {
       bg = "#FEE2E2";
       border = "#FCA5A5";
       color = "#B91C1C";
-    } else if (s === "DISMISSED") {
-      bg = "#E5E7EB";
-      border = "#CBD5F5";
-      color = "#4B5563";
     }
+
     return {
       padding: "4px 10px",
       borderRadius: 999,
@@ -815,11 +1145,7 @@ const styles = {
     justifyContent: "flex-end",
     gap: 14,
   },
-  paginationLabel: {
-    fontSize: 13,
-    color: "#6B7280",
-    fontWeight: 500,
-  },
+  paginationLabel: { fontSize: 13, color: "#6B7280", fontWeight: 500 },
   pageCircleBtn: {
     width: 30,
     height: 30,
@@ -877,19 +1203,10 @@ const styles = {
     gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
     gap: 16,
   },
-  formColumn: {
-    display: "grid",
-    gap: 12,
-  },
-  fieldGroup: {
-    display: "grid",
-    gap: 4,
-  },
-  fieldLabel: {
-    fontSize: 12,
-    fontWeight: 600,
-    color: "#6B7280",
-  },
+  formColumn: { display: "grid", gap: 12 },
+
+  fieldGroup: { display: "grid", gap: 4 },
+  fieldLabel: { fontSize: 12, fontWeight: 600, color: "#6B7280" },
   fieldInput: {
     width: "100%",
     borderRadius: 10,
@@ -912,11 +1229,8 @@ const styles = {
     resize: "none",
     outline: "none",
   },
-  noteGroup: {
-    marginTop: 4,
-    display: "grid",
-    gap: 4,
-  },
+  noteGroup: { marginTop: 4, display: "grid", gap: 4 },
+
   modalActions: {
     marginTop: 8,
     display: "flex",

@@ -17,7 +17,7 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/drivers", label: "Driver Registration", icon: FileUser },
   { href: "/buses", label: "Bus Registration", icon: BusFront },
-  { href: "/incidents", label: "Incident Reports", icon: TriangleAlert },
+  { href: "/monitoring", label: "Iot Monitoring", icon: TriangleAlert },
   { href: "/trips", label: "Trip History", icon: Clock3 },
   { href: "/emergency", label: "Emergency Reports", icon: History },
   { href: "/feedback", label: "User Feedbacks", icon: MessageSquare },
