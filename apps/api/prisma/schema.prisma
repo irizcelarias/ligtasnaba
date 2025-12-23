@@ -213,15 +213,15 @@ model EmergencyIncident {
 }
 
 model IotDeviceStatusReport {
-  id              String   @id @default(uuid())
-  deviceId        String?
-  busId           String?
-  driverProfileId String?
+  id              String   @id @default(uuid()) @db.Uuid
+  deviceId        String?  @map("device_id")
+  busId           String?  @map("bus_id")
+  driverProfileId String?  @map("driver_profile_id")
   status          String
   note            String?
-  adminStatus     String   @default("PENDING")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  adminStatus     String   @default("PENDING") @map("admin_status")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
   bus    Bus?           @relation("BusIotReports", fields: [busId], references: [id])
   driver DriverProfile? @relation("DriverIotReports", fields: [driverProfileId], references: [driverId])
@@ -230,4 +230,5 @@ model IotDeviceStatusReport {
   @@index([status, createdAt])
   @@index([adminStatus, createdAt])
   @@index([busId, createdAt])
+  @@map("IotDeviceStatusReport")
 }
